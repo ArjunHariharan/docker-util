@@ -1,0 +1,164 @@
+services:
+  scylla:
+    image: scylladb/scylla:latest
+    ports:
+      - "9042:9042"
+    healthcheck:
+      test: ["CMD", "cqlsh", "scylla", "-e", "DESCRIBE KEYSPACES"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - scylla_data:/var/lib/scylla
+      - ./infra/local/scylla:/setup
+
+  valkey-node-1:
+    image: docker.io/arjun1601/valkey:8.0.2
+    ports:
+      - 6379:6379
+    environment:
+      - 'VALKEY_PASSWORD=password'
+      - 'VALKEY_MASTER_PASSWORD=password'
+      - 'VALKEY_NODES=valkey-node-1 valkey-node-2 valkey-node-3'
+      - 'VALKEY_CLUSTER_ANNOUNCE_HOSTNAME=valkey-node-1'
+      - 'VALKEY_CLUSTER_PREFERRED_ENDPOINT_TYPE=hostname'
+      - 'VALKEY_CLUSTER_ANNOUNCE_PORT=6379'
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "password", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - valkey_data_1:/bitnami/valkey/data
+
+  valkey-node-2:
+    image: docker.io/arjun1601/valkey:8.0.2
+    ports:
+      - 6380:6380
+    environment:
+      - 'VALKEY_PASSWORD=password'
+      - 'VALKEY_MASTER_PASSWORD=password'
+      - 'VALKEY_PORT_NUMBER=6380'
+      - 'VALKEY_NODES=valkey-node-1 valkey-node-2 valkey-node-3'
+      - 'VALKEY_CLUSTER_ANNOUNCE_HOSTNAME=valkey-node-2'
+      - 'VALKEY_CLUSTER_PREFERRED_ENDPOINT_TYPE=hostname'
+      - 'VALKEY_CLUSTER_ANNOUNCE_PORT=6380'
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "password", "-p", "6380", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - valkey_data_2:/bitnami/valkey/data
+
+  valkey-node-3:
+    image: docker.io/arjun1601/valkey:8.0.2
+    ports:
+      - 6381:6381
+    environment:
+      - 'VALKEY_PASSWORD=password'
+      - 'VALKEY_MASTER_PASSWORD=password'
+      - 'VALKEY_PORT_NUMBER=6381'
+      - 'VALKEY_NODES=valkey-node-1:6379 valkey-node-2:6380 valkey-node-3:6381'
+      - 'VALKEY_CLUSTER_ANNOUNCE_HOSTNAME=valkey-node-3'
+      - 'VALKEY_CLUSTER_PREFERRED_ENDPOINT_TYPE=hostname'
+      - 'VALKEY_CLUSTER_ANNOUNCE_PORT=6381'
+      - 'REDISCLI_AUTH=password'
+      - 'VALKEY_CLUSTER_REPLICAS=0'
+      - 'VALKEY_CLUSTER_CREATOR=yes'
+    depends_on:
+      - valkey-node-1
+      - valkey-node-2
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "password", "-p", "6381", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - valkey_data_3:/bitnami/valkey/data
+
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    profiles: [local]
+    ports:
+      - "36379:5540"
+
+  zookeeper:
+    image: bitnami/zookeeper:3.8.4
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: bitnami/kafka:3.9.0
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:9092,BROKER://0.0.0.0:19092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092,BROKER://kafka:19092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,BROKER:PLAINTEXT
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=BROKER
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_ZOOKEEPER_PROTOCOL=PLAINTEXT
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=false
+    depends_on:
+      - zookeeper
+    restart: always
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--list", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  kafka-init:
+    image: bitnami/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_OPTS=-Djava.security.auth.login.config=/opt/bitnami/kafka/config/kafka_jaas.conf
+    command:
+      [
+        "bash", "-c",
+        "
+        kafka-topics.sh --create --if-not-exists --topic iam --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092  &&
+        kafka-topics.sh --create --if-not-exists --topic iam-test --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic payment --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic payment-test --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic subscription --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic subscription-test --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic appsflyer --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic appsflyer-test --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic nexus-dlq --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties &&
+        kafka-topics.sh --create --if-not-exists --topic nexus-dlq-test --partitions 1 --replication-factor 1 --bootstrap-server kafka:19092 --command-config /opt/bitnami/kafka/config/client-sasl.properties
+        "
+      ]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: kafka-ui
+    profiles: [local]
+    ports:
+      - "39092:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      - kafka
+    restart: always
+
+volumes:
+  scylla_data:
+  valkey_data_1:
+  valkey_data_2:
+  valkey_data_3:
